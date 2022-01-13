@@ -1823,6 +1823,127 @@ pub const data_in_code_entry = extern struct {
     kind: u16,
 };
 
+pub const UNWIND_IS_NOT_FUNCTION_START = 0x80000000;
+pub const UNWIND_HAS_LSDA = 0x40000000;
+pub const UNWIND_PERSONALITY_MASK = 0x30000000;
+
+pub const unwind_type_x86_64 = enum(u32) {
+    UNWIND_X86_64_MODE_MASK = 0x0F000000,
+    UNWIND_X86_64_MODE_RBP_FRAME = 0x01000000,
+    UNWIND_X86_64_MODE_STACK_IMMD = 0x02000000,
+    UNWIND_X86_64_MODE_STACK_IND = 0x03000000,
+    UNWIND_X86_64_MODE_DWARF = 0x04000000,
+
+    UNWIND_X86_64_RBP_FRAME_REGISTERS = 0x00007FFF,
+    UNWIND_X86_64_RBP_FRAME_OFFSET = 0x00FF0000,
+
+    UNWIND_X86_64_FRAMELESS_STACK_SIZE = 0x00FF0000,
+    UNWIND_X86_64_FRAMELESS_STACK_ADJUST = 0x0000E000,
+    UNWIND_X86_64_FRAMELESS_STACK_REG_COUNT = 0x00001C00,
+    UNWIND_X86_64_FRAMELESS_STACK_REG_PERMUTATION = 0x000003FF,
+
+    UNWIND_X86_64_DWARF_SECTION_OFFSET = 0x00FFFFFF,
+};
+
+pub const unwind_reg_x86_64 = enum(u3) {
+    UNWIND_X86_64_REG_NONE = 0,
+    UNWIND_X86_64_REG_RBX = 1,
+    UNWIND_X86_64_REG_R12 = 2,
+    UNWIND_X86_64_REG_R13 = 3,
+    UNWIND_X86_64_REG_R14 = 4,
+    UNWIND_X86_64_REG_R15 = 5,
+    UNWIND_X86_64_REG_RBP = 6,
+};
+
+pub const unwind_type_arm64 = enum(u32) {
+    UNWIND_ARM64_MODE_MASK = 0x0F000000,
+    UNWIND_ARM64_MODE_FRAMELESS = 0x02000000,
+    UNWIND_ARM64_MODE_DWARF = 0x03000000,
+    UNWIND_ARM64_MODE_FRAME = 0x04000000,
+
+    UNWIND_ARM64_FRAME_X19_X20_PAIR = 0x00000001,
+    UNWIND_ARM64_FRAME_X21_X22_PAIR = 0x00000002,
+    UNWIND_ARM64_FRAME_X23_X24_PAIR = 0x00000004,
+    UNWIND_ARM64_FRAME_X25_X26_PAIR = 0x00000008,
+    UNWIND_ARM64_FRAME_X27_X28_PAIR = 0x00000010,
+    UNWIND_ARM64_FRAME_D8_D9_PAIR = 0x00000100,
+    UNWIND_ARM64_FRAME_D10_D11_PAIR = 0x00000200,
+    UNWIND_ARM64_FRAME_D12_D13_PAIR = 0x00000400,
+    UNWIND_ARM64_FRAME_D14_D15_PAIR = 0x00000800,
+
+    UNWIND_ARM64_FRAMELESS_STACK_SIZE_MASK = 0x00FFF000,
+    UNWIND_ARM64_DWARF_SECTION_OFFSET = 0x00FFFFFF,
+};
+
+pub const UNWIND_SECTION_VERSION = 1;
+pub const UNWIND_SECOND_LEVEL_REGULAR = 2;
+pub const UNWIND_SECOND_LEVEL_COMPRESSED = 3;
+
+pub inline fn unwindInfoCompressedEntryFuncOffset(entry: u32) u32 {
+    return entry & 0x00ffffff;
+}
+
+pub inline fn unwindInfoCompressedEntryEncodingIndex(entry: u32) u32 {
+    return (entry >> 24) & 0xff;
+}
+
+pub const UnwindInfoSectionHeader = extern struct {
+    version: u32 = UNWIND_SECTION_VERSION,
+    common_encodings_array_section_offset: u32,
+    common_encodings_array_count: u32,
+    personality_array_section_offset: u32,
+    personality_array_count: u32,
+    index_section_offset: u32,
+    index_count: u32,
+    // compact_unwind_encoding_t[]
+    // uint32_t personalities[]
+    // unwind_info_section_header_index_entry[]
+    // unwind_info_section_header_lsda_index_entry[]
+};
+
+pub const UnwindInfoSectionHeaderIndexEntry = extern struct {
+    functionOffset: u32,
+    /// section offset to start of regular or compress page
+    secondLevelPagesSectionOffset: u32,
+    /// section offset to start of lsda_index array for this range
+    lsdaIndexArraySectionOffset: u32,
+};
+
+pub const UnwindInfoSectionHeaderLsdaIndexEntry = extern struct {
+    functionOffset: u32,
+    lsdaOffset: u32,
+};
+
+pub const UnwindInfoRegularSecondLevelEntry = extern struct {
+    functionOffset: u32,
+    encoding: u32,
+};
+
+pub const UnwindInfoRegularSecondLevelPageHeader = extern struct {
+    kind: u32 = UNWIND_SECOND_LEVEL_REGULAR,
+    entryPageOffset: u16,
+    entryCount: u16,
+    // entry array
+};
+
+pub const UnwindInfoCompressedSecondLevelPageHeader = extern struct {
+    kind: u32 = UNWIND_SECOND_LEVEL_COMPRESSED,
+    entryPageOffset: u16,
+    entryCount: u16,
+    encodingsPageOffset: u16,
+    encodingsCount: u16,
+    // 32-bit entry array
+    // encodings array
+};
+
+pub const CompactUnwindEntry64 = extern struct {
+    func_addr: u64,
+    fun_len: u32,
+    encoding: u32,
+    personality: u64,
+    lsda: u64,
+};
+
 /// A Zig wrapper for all known MachO load commands.
 /// Provides interface to read and write the load command data to a buffer.
 pub const LoadCommand = union(enum) {

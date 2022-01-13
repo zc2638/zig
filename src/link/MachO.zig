@@ -1670,12 +1670,23 @@ pub fn getMatchingSection(self: *MachO, sect: macho.section_64) !?MatchingSectio
                     };
                 }
                 if (sect.isDebug()) {
-                    // TODO debug attributes
                     if (mem.eql(u8, "__LD", segname) and mem.eql(u8, "__compact_unwind", sectname)) {
-                        log.debug("TODO compact unwind section: type 0x{x}, name '{s},{s}'", .{
-                            sect.flags, segname, sectname,
-                        });
+                        if (self.unwind_info_section_index == null) {
+                            self.unwind_info_section_index = try self.initSection(
+                                self.text_segment_cmd_index.?,
+                                "__unwind_info",
+                                sect.size,
+                                sect.@"align",
+                                .{},
+                            );
+                        }
+
+                        break :blk .{
+                            .seg = self.text_segment_cmd_index.?,
+                            .sect = self.unwind_info_section_index.?,
+                        };
                     }
+
                     break :blk null;
                 }
 
@@ -5164,6 +5175,7 @@ fn sortSections(self: *MachO) !void {
             &self.objc_methtype_section_index,
             &self.objc_classname_section_index,
             &self.eh_frame_section_index,
+            &self.unwind_info_section_index,
         };
         for (indices) |maybe_index| {
             const new_index: u16 = if (maybe_index.*) |index| blk: {
