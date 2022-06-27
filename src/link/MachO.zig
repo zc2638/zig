@@ -52,6 +52,12 @@ pub const SearchStrategy = enum {
     dylibs_first,
 };
 
+const SystemLib = struct {
+    needed: bool = false,
+    weak: bool = false,
+    implicit: bool = false,
+};
+
 base: File,
 
 /// If this is not null, an object file is created by LLVM and linked with LLD afterwards.
@@ -768,7 +774,7 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
             }
 
             // Shared and static libraries passed via `-l` flag.
-            var candidate_libs = std.StringArrayHashMap(link.SystemLib).init(arena);
+            var candidate_libs = std.StringArrayHashMap(SystemLib).init(arena);
 
             const system_lib_names = self.base.options.system_libs.keys();
             for (system_lib_names) |system_lib_name| {
@@ -781,7 +787,10 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 }
 
                 const system_lib_info = self.base.options.system_libs.get(system_lib_name).?;
-                try candidate_libs.put(system_lib_name, system_lib_info);
+                try candidate_libs.put(system_lib_name, .{
+                    .needed = system_lib_info.needed,
+                    .weak = system_lib_info.weak,
+                });
             }
 
             var lib_dirs = std.ArrayList([]const u8).init(arena);
@@ -793,7 +802,7 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 }
             }
 
-            var libs = std.StringArrayHashMap(link.SystemLib).init(arena);
+            var libs = std.StringArrayHashMap(SystemLib).init(arena);
 
             // Assume ld64 default -search_paths_first if no strategy specified.
             const search_strategy = self.base.options.search_strategy orelse .paths_first;
@@ -848,8 +857,10 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 // re-exports every single symbol definition.
                 for (lib_dirs.items) |dir| {
                     if (try resolveLib(arena, dir, "System", ".tbd")) |full_path| {
-                        try libs.put(full_path, .{ .needed = false });
                         libsystem_available = true;
+                        if (!libs.contains(full_path)) {
+                            try libs.put(full_path, .{ .implicit = true });
+                        }
                         break :blk;
                     }
                 }
@@ -858,8 +869,10 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 for (lib_dirs.items) |dir| {
                     if (try resolveLib(arena, dir, "System", ".dylib")) |libsystem_path| {
                         if (try resolveLib(arena, dir, "c", ".dylib")) |libc_path| {
-                            try libs.put(libsystem_path, .{ .needed = false });
-                            try libs.put(libc_path, .{ .needed = false });
+                            if (!libs.contains(libc_path) and !libs.contains(libsystem_path)) {
+                                try libs.put(libsystem_path, .{ .implicit = true });
+                                try libs.put(libc_path, .{ .implicit = true });
+                            }
                             libsystem_available = true;
                             break :blk;
                         }
@@ -873,7 +886,9 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 const full_path = try comp.zig_lib_directory.join(arena, &[_][]const u8{
                     "libc", "darwin", libsystem_name,
                 });
-                try libs.put(full_path, .{ .needed = false });
+                if (!libs.contains(full_path)) {
+                    try libs.put(full_path, .{ .implicit = true });
+                }
             }
 
             // frameworks
@@ -890,7 +905,11 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
                 for (framework_dirs.items) |dir| {
                     for (&[_][]const u8{ ".tbd", ".dylib", "" }) |ext| {
                         if (try resolveFramework(arena, dir, f_name, ext)) |full_path| {
-                            try libs.put(full_path, self.base.options.frameworks.get(f_name).?);
+                            const info = self.base.options.frameworks.get(f_name).?;
+                            try libs.put(full_path, .{
+                                .needed = info.needed,
+                                .weak = info.weak,
+                            });
                             continue :outer;
                         }
                     }
@@ -1144,6 +1163,7 @@ pub fn flushModule(self: *MachO, comp: *Compilation, prog_node: *std.Progress.No
 
         const use_llvm = build_options.have_llvm and self.base.options.use_llvm;
         if (use_llvm or use_stage1) {
+            // TODO garbage-collect unused sections
             try self.sortSections();
             try self.allocateTextSegment();
             try self.allocateDataConstSegment();
@@ -1397,9 +1417,10 @@ const ParseDylibError = error{
 const DylibCreateOpts = struct {
     syslibroot: ?[]const u8,
     id: ?Dylib.Id = null,
-    is_dependent: bool = false,
+    dependent: bool = false,
     needed: bool = false,
     weak: bool = false,
+    implicit: bool = false,
 };
 
 pub fn parseDylib(
@@ -1468,7 +1489,8 @@ pub fn parseDylib(
 
     const should_link_dylib_even_if_unreachable = blk: {
         if (self.base.options.dead_strip_dylibs and !opts.needed) break :blk false;
-        break :blk !(opts.is_dependent or self.referenced_dylibs.contains(dylib_id));
+        if (opts.implicit) break :blk false;
+        break :blk !(opts.dependent or self.referenced_dylibs.contains(dylib_id));
     };
 
     if (should_link_dylib_even_if_unreachable) {
@@ -1517,7 +1539,7 @@ fn parseAndForceLoadStaticArchives(self: *MachO, files: []const []const u8) !voi
 fn parseLibs(
     self: *MachO,
     lib_names: []const []const u8,
-    lib_infos: []const link.SystemLib,
+    lib_infos: []const SystemLib,
     syslibroot: ?[]const u8,
     dependent_libs: anytype,
 ) !void {
@@ -1528,6 +1550,7 @@ fn parseLibs(
             .syslibroot = syslibroot,
             .needed = lib_info.needed,
             .weak = lib_info.weak,
+            .implicit = lib_info.implicit,
         })) continue;
         if (try self.parseArchive(lib, false)) continue;
 
@@ -1570,7 +1593,7 @@ fn parseDependentLibs(self: *MachO, syslibroot: ?[]const u8, dependent_libs: any
             const did_parse_successfully = try self.parseDylib(full_path, dependent_libs, .{
                 .id = dep_id.id,
                 .syslibroot = syslibroot,
-                .is_dependent = true,
+                .dependent = true,
                 .weak = weak,
             });
             if (did_parse_successfully) break;
@@ -2456,7 +2479,9 @@ fn createDyldPrivateAtom(self: *MachO) !void {
 }
 
 fn createStubHelperPreambleAtom(self: *MachO) !void {
+    if (self.dyld_stub_binder_index == null) return;
     if (self.stub_helper_preamble_atom != null) return;
+
     const arch = self.base.options.target.cpu.arch;
     const size: u64 = switch (arch) {
         .x86_64 => 15,
@@ -3224,6 +3249,7 @@ fn createMhExecuteHeaderAtom(self: *MachO) !void {
 
 fn resolveDyldStubBinder(self: *MachO) !void {
     if (self.dyld_stub_binder_index != null) return;
+    if (self.unresolved.count() == 0) return; // no need for a stub binder if we don't have any imports
 
     const n_strx = try self.makeString("dyld_stub_binder");
     const sym_index = @intCast(u32, self.undefs.items.len);
