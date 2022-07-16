@@ -1777,6 +1777,7 @@ pub const Object = struct {
                 }
 
                 const fields = ty.structFields();
+                const layout = ty.containerLayout();
 
                 var di_fields: std.ArrayListUnmanaged(*llvm.DIType) = .{};
                 defer di_fields.deinit(gpa);
@@ -1790,7 +1791,7 @@ pub const Object = struct {
                     if (field.is_comptime or !field.ty.hasRuntimeBitsIgnoreComptime()) continue;
 
                     const field_size = field.ty.abiSize(target);
-                    const field_align = field.normalAlignment(target);
+                    const field_align = field.alignment(target, layout);
                     const field_offset = std.mem.alignForwardGeneric(u64, offset, field_align);
                     offset = field_offset + field_size;
 
@@ -2425,7 +2426,7 @@ pub const DeclGen = struct {
 
     fn lowerType(dg: *DeclGen, t: Type) Allocator.Error!*const llvm.Type {
         const llvm_ty = try lowerTypeInner(dg, t);
-        if (std.debug.runtime_safety and false) check: {
+        if (std.debug.runtime_safety) check: {
             if (t.zigTypeTag() == .Opaque) break :check;
             if (!t.hasRuntimeBits()) break :check;
             if (!llvm_ty.isSized().toBool()) break :check;
@@ -2684,7 +2685,7 @@ pub const DeclGen = struct {
                 for (struct_obj.fields.values()) |field| {
                     if (field.is_comptime or !field.ty.hasRuntimeBitsIgnoreComptime()) continue;
 
-                    const field_align = field.normalAlignment(target);
+                    const field_align = field.alignment(target, struct_obj.layout);
                     big_align = @maximum(big_align, field_align);
                     const prev_offset = offset;
                     offset = std.mem.alignForwardGeneric(u64, offset, field_align);
@@ -3344,7 +3345,7 @@ pub const DeclGen = struct {
                 for (struct_obj.fields.values()) |field, i| {
                     if (field.is_comptime or !field.ty.hasRuntimeBitsIgnoreComptime()) continue;
 
-                    const field_align = field.normalAlignment(target);
+                    const field_align = field.alignment(target, struct_obj.layout);
                     big_align = @maximum(big_align, field_align);
                     const prev_offset = offset;
                     offset = std.mem.alignForwardGeneric(u64, offset, field_align);
@@ -8884,13 +8885,14 @@ fn llvmFieldIndex(
         }
         return null;
     }
-    assert(ty.containerLayout() != .Packed);
+    const layout = ty.containerLayout();
+    assert(layout != .Packed);
 
     var llvm_field_index: c_uint = 0;
     for (ty.structFields().values()) |field, i| {
         if (field.is_comptime or !field.ty.hasRuntimeBitsIgnoreComptime()) continue;
 
-        const field_align = field.normalAlignment(target);
+        const field_align = field.alignment(target, layout);
         big_align = @maximum(big_align, field_align);
         const prev_offset = offset;
         offset = std.mem.alignForwardGeneric(u64, offset, field_align);
